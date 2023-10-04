@@ -96,6 +96,26 @@ query submissionDetails($submissionId: Int!) {
 }
 """,'variables':{"submissionId": 1022704592}}
 
+def retry_post(query,name):
+  global num_retries
+  global retry_wait
+  global graphql_url
+  global headers
+  for i in range(num_retries):
+    response = session.post(graphql_url, headers=headers, json=query)
+    if response.status_code==200:
+      data=response.json()
+      if data['data'][name]==None:
+        print("{} was none\n Retrying {} for submission list after {} seconds.".format(name,graphql_url,retry_wait))
+      else:
+        return data['data'][name]
+    else:
+      print("Failed with code {} \n Retrying {} for submission list after {} seconds.".format(response.status_code,graphql_url,retry_wait))
+    sleep(retry_wait)
+  else:
+    print("Retries failed")
+    exit(2)
+
 upt_timestamp=prv_timestamp
 offset=0
 hasNext=True
@@ -104,23 +124,9 @@ total_submissions=0
 accepted_submissions=0
 while hasNext:
   data_submission_id['variables']['offset']=offset
-
-  for i in range(num_retries):
-    response = session.post(graphql_url, headers=headers, json=data_submission_id)
-    if response.status_code==200:
-      data=response.json()
-      if data['data']['submissionList']==None:
-        print("submissionList was none\n Retrying {} for submission list after {} seconds.".format(graphql_url,retry_wait))
-      else:
-        break
-    print("Failed with code {} \n Retrying {} for submission list after {} seconds.".format(response.status_code,graphql_url,retry_wait))
-    sleep(retry_wait)
-  else:
-    print("Retries failed")
-    exit(2)
-    
-  hasNext=data['data']['submissionList']['hasNext']
-  submissions_data=data['data']['submissionList']['submissions']
+  data=retry_post(data_submission_id,"submissionList")
+  hasNext=data['hasNext']
+  submissions_data=data['submissions']
   offset+=limit
   for x in submissions_data:
     x['timestamp']=int(x['timestamp'])
@@ -134,31 +140,14 @@ while hasNext:
       continue
     accepted_submissions+=1
     Q_title['variables']['titleSlug']=x['titleSlug']
+    
+    Q_title_data=retry_post(Q_title,"question")
 
-    for i in range(num_retries):
-      response = session.post(graphql_url, headers=headers, json=Q_title)
-      if response.status_code==200:
-        break
-      print("Failed with code {} \n Retrying {} for submission list after {} seconds.".format(response.status_code,graphql_url,retry_wait))
-      sleep(retry_wait)
-    else:
-      print("Retries failed")
-      exit(2)
-    Q_title_data = response.json()['data']['question']
     Q_title_data['topicTags']=[topic['name'] for topic in Q_title_data['topicTags']]
     data_sumbission_info['variables']['submissionId']=x['id']
-
-    for i in range(num_retries):
-      response = session.post(graphql_url, headers=headers, json=data_sumbission_info)
-      if response.status_code==200:
-        break
-      print("Failed with code {} \n Retrying {} for submission list after {} seconds.".format(response.status_code,graphql_url,retry_wait))
-      sleep(retry_wait)
-    else:
-      print("Retries failed")
-      exit(2)
-    submission_details=response.json()['data']['submissionDetails']
-
+    
+    submission_details=retry_post(data_sumbission_info,"submissionDetails")
+    
     row['Date']=datetime.fromtimestamp(x['timestamp']).strftime("%d/%m/%Y")
     row['id']=Q_title_data['questionFrontendId']
     row['Title']=Q_title_data['title']
@@ -166,13 +155,11 @@ while hasNext:
     row['Difficulty']=Q_title_data['difficulty']
     row['Tags']=Q_title_data['topicTags']
     row['Notes']=multiple_replace(note_replaces,x['notes'])
+    row['Path_for_adoc']=os.path.join(info["code_path"],x['id']+"_"+x['titleSlug']+"."+x['lang'])
     row['Path']=os.path.join(code_path,x['id']+"_"+x['titleSlug']+"."+x['lang'])
     print(accepted_submissions,"\t",row['Title'])
     with open(row['Path'],"w") as f:
-      if submission_details!=None:
         f.write(submission_details['code'])
-      else:
-        print(response.json())
         
     subs.append(row)
 print(' New Submissions \t{} \n Accepted submissions \t{}'.format(total_submissions,accepted_submissions))
@@ -193,9 +180,9 @@ with open(submissions_path,"a+") as f:
         tags+=' , '
       tags+=tag
     f.write("| {} | link:{}[{}] {}{}[{}.{}] | [.{}. {}]#*{}*# | {} | {}".format(submission['Date'],
-            problems_url,
-            submission['Path'],
+            submission['Path_for_adoc'],
             file_unicode_symbol,
+            problems_url,
             submission['titleSlug'],
             submission['id'],
             submission['Title'],
